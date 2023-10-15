@@ -1,0 +1,12 @@
+mqtt_server: localhost
+mqtt_server_port: 1883
+mqtt_keep_alive: 60
+mqtt_username: $USER
+mqtt_password: $PASSWORD
+mqtt_pool_topic: poolcontrol
+powerwall_host: $POWERWALL_IP
+powerwall_email: $POWERWALL_USER
+powerwall_timezone: Australia/Sydney
+powerwall_password: $POWERWALL_PASS
+powerwall_poll_s: 60
+plug_id: tasmota_A12345
