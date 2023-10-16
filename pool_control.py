@@ -16,11 +16,13 @@ import datetime
 
 logger = logging.getLogger(__name__)
 
-global state, current_draw, runtime, pool_hours, status
+global state, current_draw, runtime, pool_hours, status, counter
 
 pool_hours = [0, 8, 8, 6, 6, 6, 4, 4, 4, 6, 6, 6, 8]
 
 status = {}
+
+counter = 0
 
 def on_connect(client, userdata, flags, rc):
     logger.info("Connected with result code %d", rc)
@@ -52,6 +54,7 @@ def poll_pw(cfg: DictConfig, pw: pypowerwall.Powerwall, client: mqtt.Client) -> 
     global state
     global runtime
     global pool_hours
+    global counter
 
     grid = pw.grid()
     solar = pw.solar()
@@ -61,6 +64,9 @@ def poll_pw(cfg: DictConfig, pw: pypowerwall.Powerwall, client: mqtt.Client) -> 
     solar_excess = solar - home
     logger.info(f" grid: {grid} solar: {solar} battery: {battery} home: {home} battery_level: {battery_level} solar_excess: {solar_excess}")
     client.publish(f"{cfg.mqtt_pool_topic}/solar_free", solar_excess, retain=True) # Retain here as we want this for state tracking 
+
+    if counter > 0:
+        counter -= 1
 
     now = datetime.datetime.now()                  
     logger.info(f"Steering state: {state}, runtime: {runtime}, time: {now}, hour: {now.hour}")   
@@ -72,15 +78,18 @@ def poll_pw(cfg: DictConfig, pw: pypowerwall.Powerwall, client: mqtt.Client) -> 
             turn_plug_off(client, cfg.plug_id)
             status[str(now)] = ("OFF", f"Runtime is {runtime}")
             client.publish(f"{cfg.mqtt_pool_topic}/status", str(status), retain=True) # Retain here as we want this for state tracking
-        elif solar_excess < 0 and not (now.hour >= 22 or now.hour < 7):
-            logger.info(f"Disabling plug as solar_excess is {solar_excess}")
-            turn_plug_off(client, cfg.plug_id)
-            status[str(now)] = ("OFF", f"solar_excess is {solar_excess}")
-            client.publish(f"{cfg.mqtt_pool_topic}/status", str(status), retain=True) # Retain here as we want this for state tracking
+        elif solar_excess < -500 and battery_level < 60 and not (now.hour >= 22 or now.hour < 7):
+            counter += 2
+            if counter >= 5: # we can cope with small bursts of high load
+                logger.info(f"Disabling plug as solar_excess is {solar_excess} and battery_level {battery_level}")
+                turn_plug_off(client, cfg.plug_id)
+                status[str(now)] = ("OFF", f"solar_excess is {solar_excess} and battery_level {battery_level}")
+                client.publish(f"{cfg.mqtt_pool_topic}/status", str(status), retain=True) # Retain here as we want this for state tracking
     else: # Power is off
         if runtime < pool_hours[now.month] * 60 * 60 :
-            if solar_excess > 1041: # 1041 is hard coded, we can calculate stuff with current_draw here
-                logger.info(f"Enabling plug as solar_excess is {solar_excess}")
+            if solar_excess > 1100 and solar > 2400: # we want more than 1100 w free and more than 2400 being generated, otherwise we will probably flip-flop
+                counter = 0
+                logger.info(f"Enabling plug as solar_excess is {solar_excess} and solar is {solar}")
                 turn_plug_on(client, cfg.plug_id)
                 status[str(now)] = ("ON", f"solar_excess is {solar_excess}")
                 client.publish(f"{cfg.mqtt_pool_topic}/status", str(status), retain=True) # Retain here as we want this for state tracking
@@ -104,6 +113,7 @@ def pw_poll_loop(cfg: DictConfig) -> None:
     global runtime
     global state
     global status
+    global counter
 
     client = mqtt.Client()
     client.enable_logger(logger)
@@ -148,6 +158,7 @@ def pw_poll_loop(cfg: DictConfig) -> None:
         now = datetime.datetime.now()                  
         client.publish(f"{cfg.mqtt_pool_topic}/heartbeat", str(now), retain=True) # Retain here as we want this for state tracking
         if now.hour == 7 and now.minute == 0: # Reset at 7am daily
+            counter = 0
             status = {}
             status[str(now)] = ("OFF", "Daily Reset")
             runtime = 0
