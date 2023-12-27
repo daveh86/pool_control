@@ -16,9 +16,9 @@ import datetime
 
 logger = logging.getLogger(__name__)
 
-global state, current_draw, runtime, pool_hours, status, counter
+global state, current_draw, runtime, pool_hours, status, counter, manual
 
-pool_hours = [0, 8, 8, 6, 6, 6, 4, 4, 4, 6, 6, 6, 8]
+pool_hours = [0, 8, 8, 6, 6, 6, 4, 4, 4, 6, 6, 8, 8]
 
 status = {}
 
@@ -36,6 +36,13 @@ def on_message_plug_sensor(client, userdata, msg):
     logger.info(f"mqtt message: {msg.payload}")
     logger.info(f"plug is currently using: {payload['ENERGY']['Power']}")
     current_draw = int(payload['ENERGY']['Power'])
+
+def on_message_override(client, userdata, msg):
+    global manual
+    payload = msg.payload.decode('ascii')
+    logger.info(f"mqtt message: {payload}")
+    manual = (payload == 'MANUAL')
+    logger.info(f"setting manual mode to be {manual}")
 
 def on_message_plug_state(client, userdata, msg):
     global state
@@ -55,6 +62,7 @@ def poll_pw(cfg: DictConfig, pw: pypowerwall.Powerwall, client: mqtt.Client) -> 
     global runtime
     global pool_hours
     global counter
+    global manual
 
     grid = pw.grid()
     solar = pw.solar()
@@ -69,7 +77,7 @@ def poll_pw(cfg: DictConfig, pw: pypowerwall.Powerwall, client: mqtt.Client) -> 
         counter -= 1
 
     now = datetime.datetime.now()                  
-    logger.info(f"Steering state: {state}, runtime: {runtime}, time: {now}, hour: {now.hour}")   
+    logger.info(f"Steering state: {state}, manual: {manual}, runtime: {runtime}, time: {now}, hour: {now.hour}")   
     if state == True: # Power is on
         runtime += cfg.powerwall_poll_s
         client.publish(f"{cfg.mqtt_pool_topic}/runtime", runtime, retain=True) # Retain here as we want this for state tracking 
@@ -78,7 +86,7 @@ def poll_pw(cfg: DictConfig, pw: pypowerwall.Powerwall, client: mqtt.Client) -> 
             turn_plug_off(client, cfg.plug_id)
             status[str(now)] = ("OFF", f"Runtime is {runtime}")
             client.publish(f"{cfg.mqtt_pool_topic}/status", str(status), retain=True) # Retain here as we want this for state tracking
-        elif solar_excess < -500 and battery_level < 60 and not (now.hour >= 22 or now.hour < 7):
+        elif solar_excess < -500 and battery_level < 50 and not (now.hour >= 22 or now.hour < 7):
             counter += 2
             if counter >= 5: # we can cope with small bursts of high load
                 logger.info(f"Disabling plug as solar_excess is {solar_excess} and battery_level {battery_level}")
@@ -114,6 +122,7 @@ def pw_poll_loop(cfg: DictConfig) -> None:
     global state
     global status
     global counter
+    global manual
 
     client = mqtt.Client()
     client.enable_logger(logger)
@@ -130,10 +139,19 @@ def pw_poll_loop(cfg: DictConfig) -> None:
     client.message_callback_add(f"tele/{cfg.plug_id}/SENSOR", on_message_plug_sensor)
     client.message_callback_add(f"tele/{cfg.plug_id}/STATE", on_message_plug_state)
 
+    # Manual Override Hook
+    client.message_callback_add(f"{cfg.mqtt_pool_topic}/override", on_message_override)
+
+    msg = subscribe.simple(f"{cfg.mqtt_pool_topic}/override", hostname=cfg.mqtt_server, port=cfg.mqtt_server_port, auth={'username':cfg.mqtt_username, 'password': cfg.mqtt_password})
+    manual = (msg.payload == b"MANUAL")
+    logger.info(f"Loaded initial manual value of {manual} from {msg.payload}")
+
     client.connect(host=cfg.mqtt_server, port=cfg.mqtt_server_port, keepalive=cfg.mqtt_keep_alive)
     client.loop_start()
     logger.info(f"Subscribing to {cfg.plug_id}")
     client.subscribe(f"tele/{cfg.plug_id}/#", 0)
+    logger.info(f"Subscribing to {cfg.mqtt_pool_topic}/override")
+    client.subscribe(f"{cfg.mqtt_pool_topic}/override", 0)
 
     pw = connect_pw(cfg)
 
@@ -170,11 +188,19 @@ def pw_poll_loop(cfg: DictConfig) -> None:
 
 def turn_plug_on(client, plug_id):
     global state
+    global manual
+    if manual:
+       logger.info(f"System in manual mode, not enabling plug")
+       return
     state = True
     client.publish(f"cmnd/{plug_id}/Power", 1)
 
 def turn_plug_off(client, plug_id):
     global state
+    global manual
+    if manual:
+       logger.info(f"System in manual mode, not enabling plug")
+       return
     state = False
     client.publish(f"cmnd/{plug_id}/Power", 0)
 
