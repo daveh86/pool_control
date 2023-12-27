@@ -1,0 +1,13 @@
+[Unit]
+Description=Pool Control
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/home/david/miniconda3/envs/powerwall/bin/python /home/david/pool_control/pool_control.py -f -c /home/david/pool_control/config.yaml
+StandardOutput=file:/var/log/poolcontrol.log
+StandardError=file:/var/log/poolcontrol.log
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
