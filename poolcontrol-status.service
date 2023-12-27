@@ -1,0 +1,11 @@
+[Unit]
+Description=Pool Control Status
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/home/david/miniconda3/envs/powerwall/bin/python /home/david/pool_control/status.py -f -c /home/david/pool_control/config.yaml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
